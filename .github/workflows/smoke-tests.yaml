@@ -22,20 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv pip install --system --quiet yamllint
       - name: Lint OpenSLO definitions
         run: |
           if [ -d openslo ]; then
-            yamllint -d relaxed openslo/
-          else
-            echo "openslo/ not found, skipping"
+            uvx yamllint -d relaxed openslo/
           fi
       - name: Lint Kubernetes manifests
         run: |
           if [ -d kubernetes ]; then
-            yamllint -d relaxed kubernetes/
-          else
-            echo "kubernetes/ not found, skipping"
+            uvx yamllint -d relaxed kubernetes/
           fi
 
   lint-dockerfile:
