@@ -4,7 +4,7 @@
 
 # --- Configuration ---
 KIND_CLUSTER_NAME   ?= enriched-alert
-CONTAINER_RUNTIME   ?= docker
+CONTAINER_RUNTIME   ?= podman
 MONITORING_NS       := monitoring
 AGENT_IMAGE         := ai-agent:latest
 SERVICE_IMAGE       := example-service:latest
