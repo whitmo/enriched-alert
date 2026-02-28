@@ -102,6 +102,9 @@ jobs:
         run: |
           if [ -f kubernetes/service-deployment.yaml ]; then
             kubectl apply -f kubernetes/service-deployment.yaml
+          elif [ -f example-service/kubernetes/deployment.yaml ]; then
+            kubectl apply -f example-service/kubernetes/deployment.yaml
+            kubectl apply -f example-service/kubernetes/service.yaml
           else
             echo "::warning::No example-service deployment manifest found"
           fi
