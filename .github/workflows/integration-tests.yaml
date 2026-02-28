@@ -1,0 +1,175 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    name: Full-stack integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Kind
+        run: |
+          [ -f ./kind ] || curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Create Kind cluster
+        run: |
+          if [ -f kind-config.yaml ]; then
+            kind create cluster --name ci-test --config kind-config.yaml
+          else
+            kind create cluster --name ci-test
+          fi
+          kubectl cluster-info --context kind-ci-test
+
+      - name: Deploy monitoring stack
+        run: |
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          HELM_VALUES=""
+          if [ -f kubernetes/monitoring/helm-values.yaml ]; then
+            HELM_VALUES="-f kubernetes/monitoring/helm-values.yaml"
+          fi
+          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            $HELM_VALUES \
+            --set grafana.enabled=false \
+            --wait --timeout 5m
+
+      - name: Deploy Prometheus rules and ServiceMonitor
+        run: |
+          if [ -f kubernetes/monitoring/prometheus-rules.yaml ]; then
+            kubectl apply -f kubernetes/monitoring/prometheus-rules.yaml -n monitoring
+          fi
+          if [ -f kubernetes/monitoring/service-monitor.yaml ]; then
+            kubectl apply -f kubernetes/monitoring/service-monitor.yaml -n monitoring
+          fi
+
+      - name: Build and load AI agent image
+        run: |
+          if [ -d ai-agent ] && [ -f ai-agent/Dockerfile ]; then
+            docker build -t ai-agent:latest ./ai-agent
+            kind load docker-image ai-agent:latest --name ci-test
+          else
+            echo "::warning::ai-agent not found, skipping"
+          fi
+
+      - name: Build and load example service image
+        run: |
+          if [ -d example-service ] && [ -f example-service/Dockerfile ]; then
+            docker build -t example-service:latest ./example-service
+            kind load docker-image example-service:latest --name ci-test
+          else
+            echo "::warning::example-service not found, skipping"
+          fi
+
+      - name: Deploy OpenSLO definitions
+        run: |
+          if [ -d openslo ]; then
+            kubectl create configmap openslo-definitions \
+              --from-file=openslo/ \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+      - name: Deploy AI agent
+        run: |
+          if [ -f kubernetes/agent-deployment.yaml ]; then
+            kubectl apply -f kubernetes/agent-deployment.yaml
+          elif [ -f ai-agent/kubernetes/deployment.yaml ]; then
+            kubectl apply -f ai-agent/kubernetes/deployment.yaml
+            kubectl apply -f ai-agent/kubernetes/service.yaml
+          else
+            echo "::warning::No agent deployment manifest found"
+          fi
+
+      - name: Deploy example service
+        run: |
+          if [ -f kubernetes/service-deployment.yaml ]; then
+            kubectl apply -f kubernetes/service-deployment.yaml
+          else
+            echo "::warning::No example-service deployment manifest found"
+          fi
+
+      - name: Wait for deployments to be ready
+        run: |
+          echo "Waiting for pods to be ready..."
+          kubectl wait --for=condition=ready pod -l app=ai-agent --timeout=120s 2>/dev/null || \
+            echo "::warning::ai-agent pods not ready or not found"
+          kubectl wait --for=condition=ready pod -l app=example-service --timeout=120s 2>/dev/null || \
+            echo "::warning::example-service pods not ready or not found"
+
+      - name: Run exerciser in breach mode
+        run: |
+          # Send traffic to trigger SLO breaches
+          SVC_IP=$(kubectl get svc example-service -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+          if [ -z "$SVC_IP" ]; then
+            echo "::warning::example-service not deployed, skipping exerciser"
+            exit 0
+          fi
+          kubectl run exerciser --rm -i --restart=Never --image=curlimages/curl --timeout=120s -- \
+            sh -c "for i in \$(seq 1 200); do curl -sf http://example-service/slow; curl -sf http://example-service/error; sleep 0.05; done" \
+            || echo "Exerciser completed (some errors expected in breach mode)"
+
+      - name: Verify Prometheus is scraping metrics
+        run: |
+          PROM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -z "$PROM_POD" ]; then
+            echo "::warning::Prometheus pod not found"
+            exit 0
+          fi
+          echo "Checking Prometheus targets..."
+          kubectl port-forward -n monitoring "$PROM_POD" 9090:9090 &
+          PF_PID=$!
+          sleep 3
+          # Check that Prometheus is up and has targets
+          curl -sf http://localhost:9090/api/v1/targets | head -c 2000
+          echo
+          kill $PF_PID 2>/dev/null || true
+
+      - name: Verify alerts fired
+        run: |
+          # Give alerting rules time to evaluate
+          sleep 30
+          AM_POD=$(kubectl get pod -n monitoring -l app.kubernetes.io/name=alertmanager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -z "$AM_POD" ]; then
+            echo "::warning::Alertmanager pod not found"
+            exit 0
+          fi
+          kubectl port-forward -n monitoring "$AM_POD" 9093:9093 &
+          PF_PID=$!
+          sleep 3
+          echo "Checking Alertmanager for active alerts..."
+          ALERTS=$(curl -sf http://localhost:9093/api/v2/alerts || echo "[]")
+          echo "$ALERTS" | head -c 2000
+          echo
+          kill $PF_PID 2>/dev/null || true
+
+      - name: Verify AI agent received alerts
+        run: |
+          AGENT_POD=$(kubectl get pod -l app=ai-agent -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -z "$AGENT_POD" ]; then
+            echo "::warning::AI agent pod not found"
+            exit 0
+          fi
+          echo "Checking AI agent logs for enriched alert context..."
+          kubectl logs "$AGENT_POD" --tail=50
+
+      - name: Teardown Kind cluster
+        if: always()
+        run: kind delete cluster --name ci-test

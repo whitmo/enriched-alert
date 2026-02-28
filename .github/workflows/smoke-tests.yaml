@@ -1,0 +1,79 @@
+name: Smoke Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  lint-python:
+    name: Ruff lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: check --output-format=github
+
+  lint-yaml:
+    name: YAML lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --quiet yamllint
+      - name: Lint OpenSLO definitions
+        run: |
+          if [ -d openslo ]; then
+            yamllint -d relaxed openslo/
+          else
+            echo "openslo/ not found, skipping"
+          fi
+      - name: Lint Kubernetes manifests
+        run: |
+          if [ -d kubernetes ]; then
+            yamllint -d relaxed kubernetes/
+          else
+            echo "kubernetes/ not found, skipping"
+          fi
+
+  lint-dockerfile:
+    name: Dockerfile lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ai-agent/Dockerfile
+          failure-threshold: warning
+        if: hashFiles('ai-agent/Dockerfile') != ''
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: example-service/Dockerfile
+          failure-threshold: warning
+        if: hashFiles('example-service/Dockerfile') != ''
+
+  python-syntax:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify no syntax errors
+        run: |
+          files=$(find . -name '*.py' -not -path './.git/*')
+          if [ -z "$files" ]; then
+            echo "No Python files found, skipping"
+            exit 0
+          fi
+          errors=0
+          for f in $files; do
+            python -m py_compile "$f" 2>&1 || errors=$((errors + 1))
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "Found $errors file(s) with syntax errors"
+            exit 1
+          fi
+          echo "All Python files have valid syntax"
