@@ -5,6 +5,9 @@ metadata:
   labels:
     release: prometheus
 spec:
+  namespaceSelector:
+    matchNames:
+      - default
   selector:
     matchLabels:
       app: example-service
