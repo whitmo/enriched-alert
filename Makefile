@@ -1,77 +1,79 @@
-# Makefile for PoC Deployment
+.PHONY: all help clean kind-up kind-down monitoring-up openslo-deploy rules-deploy \
+	agent-build agent-load agent-deploy service-build service-load service-deploy \
+	exercise-normal exercise-breach
 
-.PHONY: all help kind-up kind-down monitoring-up agent-build agent-load agent-deploy 
-	service-build service-load service-deploy clean
+# --- Configuration ---
+KIND_CLUSTER_NAME   ?= enriched-alert
+CONTAINER_RUNTIME   ?= docker
+MONITORING_NS       := monitoring
+AGENT_IMAGE         := ai-agent:latest
+SERVICE_IMAGE       := example-service:latest
 
-KIND_CLUSTER_NAME ?= podman-poc-cluster
-KIND_RUNTIME := podman
-MONITORING_NAMESPACE := monitoring
-GEMINI_TMP_DIR ?= /Users/whit/.gemini/tmp/1a93520244d34034b85edcaf49363e36b9daf386fab35bdd7158f71fa937dd9e
+# --- General ---
+all: kind-up monitoring-up rules-deploy agent-deploy service-deploy
 
-# --- General Targets ---
-all: kind-up monitoring-up agent-deploy service-deploy ## Builds and deploys everything
-
-help: ## Show this help
+help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-clean: kind-down ## Cleans up the Kind cluster and all deployments
-	@echo "Cleaning up..."
+clean: kind-down ## Delete cluster and all resources
 
-# --- Kind Cluster Management ---
-kind-up: ## Creates the Kind Kubernetes cluster using Podman
-	@echo "Creating Kind cluster '$(KIND_CLUSTER_NAME)' with Podman runtime..."
-	@mkdir -p $(GEMINI_TMP_DIR) # Ensure temp directory exists
-	@export KUBECONFIG=$(GEMINI_TMP_DIR)/kubeconfig-$(KIND_CLUSTER_NAME) && \
-	KIND_CONTAINER_RUNTIME=$(KIND_RUNTIME) kind create cluster --name $(KIND_CLUSTER_NAME) || true
-	@echo "Kind cluster '$(KIND_CLUSTER_NAME)' is up."
-	@export KUBECONFIG=$(GEMINI_TMP_DIR)/kubeconfig-$(KIND_CLUSTER_NAME) && \
+# --- Kind Cluster ---
+kind-up: ## Create Kind cluster
+	KIND_EXPERIMENTAL_PROVIDER=$(CONTAINER_RUNTIME) kind create cluster \
+		--name $(KIND_CLUSTER_NAME) \
+		--config kind-config.yaml
 	kubectl cluster-info --context kind-$(KIND_CLUSTER_NAME)
-	@echo "KUBECONFIG for cluster '$(KIND_CLUSTER_NAME)' is set to $(GEMINI_TMP_DIR)/kubeconfig-$(KIND_CLUSTER_NAME)"
 
-kind-down: ## Deletes the Kind Kubernetes cluster
-	@echo "Deleting Kind cluster '$(KIND_CLUSTER_NAME)'..."
-	@export KUBECONFIG=$(GEMINI_TMP_DIR)/kubeconfig-$(KIND_CLUSTER_NAME) && \
-	KIND_CONTAINER_RUNTIME=$(KIND_RUNTIME) kind delete cluster --name $(KIND_CLUSTER_NAME)
-	@echo "Kind cluster '$(KIND_CLUSTER_NAME)' deleted."
+kind-down: ## Delete Kind cluster
+	KIND_EXPERIMENTAL_PROVIDER=$(CONTAINER_RUNTIME) kind delete cluster \
+		--name $(KIND_CLUSTER_NAME)
 
-# --- Monitoring Infrastructure (Prometheus, Alertmanager) ---
-monitoring-up: ## Deploys Prometheus and Alertmanager via Helm
-	@echo "Deploying monitoring infrastructure to namespace '$(MONITORING_NAMESPACE)'..."
-	@kubectl create namespace $(MONITORING_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f - || true
-	@helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-	@helm repo update
-	@helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $(MONITORING_NAMESPACE)
+# --- Monitoring ---
+monitoring-up: ## Deploy kube-prometheus-stack via Helm
+	kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+	helm repo update
+	helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+		--namespace $(MONITORING_NS) \
+		-f kubernetes/monitoring/helm-values.yaml
 
-# --- AI Agent Targets ---
-AGENT_IMAGE_NAME ?= ai-agent
-AGENT_IMAGE_TAG ?= latest
-AGENT_BUILD_CONTEXT ?= ./ai-agent # Assuming agent code is in a folder named ai-agent
+# --- OpenSLO / Rules ---
+openslo-deploy: ## Deploy OpenSLO definitions as a ConfigMap
+	kubectl create configmap openslo-definitions \
+		--from-file=openslo/ \
+		--dry-run=client -o yaml | kubectl apply -f -
 
-agent-build: ## Builds the AI agent Podman image
-	@echo "Building AI agent image '$(AGENT_IMAGE_NAME):$(AGENT_IMAGE_TAG)'..."
-	@podman build -t $(AGENT_IMAGE_NAME):$(AGENT_IMAGE_TAG) $(AGENT_BUILD_CONTEXT)
+rules-deploy: ## Deploy Prometheus recording/alerting rules and ServiceMonitor
+	kubectl apply -f kubernetes/monitoring/prometheus-rules.yaml -n $(MONITORING_NS)
+	kubectl apply -f kubernetes/monitoring/service-monitor.yaml -n $(MONITORING_NS)
 
-agent-load: agent-build ## Loads the AI agent image into the Kind cluster
-	@echo "Loading AI agent image into Kind cluster '$(KIND_CLUSTER_NAME)'..."
-	@KIND_CONTAINER_RUNTIME=$(KIND_RUNTIME) kind load docker-image $(AGENT_IMAGE_NAME):$(AGENT_IMAGE_TAG) --name $(KIND_CLUSTER_NAME)
+# --- AI Agent ---
+agent-build: ## Build AI agent container image
+	$(CONTAINER_RUNTIME) build -t $(AGENT_IMAGE) ./ai-agent
 
-agent-deploy: agent-load ## Deploys the AI agent to the Kind cluster
-	@echo "Deploying AI agent to Kind cluster '$(KIND_CLUSTER_NAME)'..."
-	@kubectl apply -f ./kubernetes/agent-deployment.yaml # Assuming deployment manifests are here
+agent-load: ## Load AI agent image into Kind
+	KIND_EXPERIMENTAL_PROVIDER=$(CONTAINER_RUNTIME) kind load docker-image $(AGENT_IMAGE) \
+		--name $(KIND_CLUSTER_NAME)
 
-# --- Example Service Targets ---
-SERVICE_IMAGE_NAME ?= example-service
-SERVICE_IMAGE_TAG ?= latest
-SERVICE_BUILD_CONTEXT ?= ./example-service # Assuming service code is in a folder named example-service
+agent-deploy: ## Deploy AI agent to cluster
+	kubectl apply -f kubernetes/agent-deployment.yaml
 
-service-build: ## Builds the example service Podman image
-	@echo "Building example service image '$(SERVICE_IMAGE_NAME):$(SERVICE_IMAGE_TAG)'..."
-	@podman build -t $(SERVICE_IMAGE_NAME):$(SERVICE_IMAGE_TAG) $(SERVICE_BUILD_CONTEXT)
+# --- Example Service ---
+service-build: ## Build example service container image
+	$(CONTAINER_RUNTIME) build -t $(SERVICE_IMAGE) ./example-service
 
-service-load: service-build ## Loads the example service image into the Kind cluster
-	@echo "Loading example service image into Kind cluster '$(KIND_CLUSTER_NAME)'..."
-	@KIND_CONTAINER_RUNTIME=$(KIND_RUNTIME) kind load docker-image $(SERVICE_IMAGE_NAME):$(SERVICE_IMAGE_TAG) --name $(KIND_CLUSTER_NAME)
+service-load: ## Load example service image into Kind
+	KIND_EXPERIMENTAL_PROVIDER=$(CONTAINER_RUNTIME) kind load docker-image $(SERVICE_IMAGE) \
+		--name $(KIND_CLUSTER_NAME)
 
-service-deploy: service-load ## Deploys the example service to the Kind cluster
-	@echo "Deploying example service to Kind cluster '$(KIND_CLUSTER_NAME)'..."
-	@kubectl apply -f ./kubernetes/service-deployment.yaml # Assuming deployment manifests are here
+service-deploy: ## Deploy example service to cluster
+	kubectl apply -f kubernetes/service-deployment.yaml
+
+# --- Exerciser ---
+exercise-normal: ## Send normal traffic to example service
+	kubectl run exerciser --rm -i --restart=Never --image=curlimages/curl -- \
+		sh -c 'for i in $$(seq 1 100); do curl -s http://example-service/; sleep 0.1; done'
+
+exercise-breach: ## Send traffic designed to trigger SLO breach
+	kubectl run exerciser --rm -i --restart=Never --image=curlimages/curl -- \
+		sh -c 'for i in $$(seq 1 200); do curl -s http://example-service/slow; curl -s http://example-service/error; sleep 0.05; done'

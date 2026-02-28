@@ -1,0 +1,31 @@
+grafana:
+  enabled: false
+
+alertmanager:
+  alertmanagerSpec:
+    routePrefix: /
+  config:
+    route:
+      receiver: default
+      routes:
+        - receiver: ai-agent
+          matchers:
+            - alerttype = slo
+    receivers:
+      - name: default
+      - name: ai-agent
+        webhook_configs:
+          - url: http://ai-agent.default.svc.cluster.local/alert
+            send_resolved: true
+  service:
+    type: NodePort
+    nodePort: 30093
+
+prometheus:
+  prometheusSpec:
+    routePrefix: /
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+  service:
+    type: NodePort
+    nodePort: 30090
