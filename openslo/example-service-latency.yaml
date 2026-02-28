@@ -17,12 +17,12 @@ spec:
             spec:
               query: >-
                 sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
-          total:
-            metricSource:
-              type: Prometheus
-              spec:
-                query: >-
-                  sum(rate(http_request_duration_seconds_count[5m]))
+        total:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: >-
+                sum(rate(http_request_duration_seconds_count[5m]))
   timeWindow:
     - duration: 5m
       isRolling: true
