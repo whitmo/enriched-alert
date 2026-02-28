@@ -56,7 +56,7 @@ agent-load: ## Load AI agent image into Kind
 		--name $(KIND_CLUSTER_NAME)
 
 agent-deploy: ## Deploy AI agent to cluster
-	kubectl apply -f kubernetes/agent-deployment.yaml
+	kubectl apply -f ai-agent/kubernetes/deployment.yaml
 
 # --- Example Service ---
 service-build: ## Build example service container image
@@ -67,7 +67,7 @@ service-load: ## Load example service image into Kind
 		--name $(KIND_CLUSTER_NAME)
 
 service-deploy: ## Deploy example service to cluster
-	kubectl apply -f kubernetes/service-deployment.yaml
+	kubectl apply -f example-service/kubernetes/deployment.yaml
 
 # --- Exerciser ---
 exercise-normal: ## Send normal traffic to example service
@@ -76,4 +76,4 @@ exercise-normal: ## Send normal traffic to example service
 
 exercise-breach: ## Send traffic designed to trigger SLO breach
 	kubectl run exerciser --rm -i --restart=Never --image=curlimages/curl -- \
-		sh -c 'for i in $$(seq 1 200); do curl -s http://example-service/slow; curl -s http://example-service/error; sleep 0.05; done'
+		sh -c 'for i in $$(seq 1 200); do curl -s "http://example-service/latency?delay_ms=2000"; curl -s http://example-service/error; sleep 0.05; done'
