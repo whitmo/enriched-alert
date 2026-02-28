@@ -87,3 +87,39 @@ def test_alert_missing_slo_name(client):
     assert data["status"] == "received"
     assert data["enriched"] is False
     assert data["reason"] == "no slo_name label found"
+
+
+def test_alert_path_traversal(client, openslo_dir):
+    """slo_name with path traversal should be rejected, not read files outside OPENSLO_DIR."""
+    # Create a file outside the openslo dir that should NOT be reachable
+    outside_file = openslo_dir.parent / "secret.yaml"
+    outside_file.write_text("secret: data")
+
+    for malicious_name in ["../../etc/passwd", "../secret", "foo/../../etc/passwd"]:
+        payload = {
+            "status": "firing",
+            "commonLabels": {"slo_name": malicious_name},
+            "alerts": [],
+        }
+        response = client.post("/alert", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["enriched"] is False
+        assert data["reason"] == "invalid slo_name", f"Failed for slo_name={malicious_name}"
+
+
+def test_alert_malformed_yaml(client, openslo_dir):
+    """Malformed YAML in SLO file should return enriched=False with reason."""
+    bad_file = openslo_dir / "bad-slo.yaml"
+    bad_file.write_text("not: valid: yaml:\n  - [unclosed")
+
+    payload = {
+        "status": "firing",
+        "commonLabels": {"slo_name": "bad-slo"},
+        "alerts": [],
+    }
+    response = client.post("/alert", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enriched"] is False
+    assert data["reason"] == "malformed SLO definition"
