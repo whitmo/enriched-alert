@@ -10,14 +10,14 @@ spec:
       rules:
         - record: slo:example_service_latency:ratio_rate5m
           expr: |
-            rate(http_request_duration_seconds_bucket{le="0.5"}[5m])
+            sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
             /
-            rate(http_request_duration_seconds_count[5m])
+            sum(rate(http_request_duration_seconds_count[5m]))
         - record: slo:example_service_error_rate:ratio_rate5m
           expr: |
-            rate(http_requests_total{status_code=~"5.."}[5m])
+            sum(rate(http_requests_total{status_code!~"5.."}[5m]))
             /
-            rate(http_requests_total[5m])
+            sum(rate(http_requests_total[5m]))
     - name: slo.alerting
       rules:
         - alert: SLOLatencyBreach
@@ -31,7 +31,7 @@ spec:
             summary: "Latency SLO breach detected for example-service"
             description: "Less than 99% of requests completed under 500ms for more than 2 minutes."
         - alert: SLOErrorRateBreach
-          expr: slo:example_service_error_rate:ratio_rate5m > 0.01
+          expr: slo:example_service_error_rate:ratio_rate5m < 0.99
           for: 2m
           labels:
             severity: warning
@@ -39,4 +39,4 @@ spec:
             slo_name: example-service-error-rate
           annotations:
             summary: "Error rate SLO breach detected for example-service"
-            description: "Error rate exceeded 1% for more than 2 minutes."
+            description: "Less than 99% of requests succeeded (non-5xx) for more than 2 minutes."
