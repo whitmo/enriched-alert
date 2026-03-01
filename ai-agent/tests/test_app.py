@@ -1,6 +1,3 @@
-import os
-import tempfile
-
 import pytest
 import yaml
 from fastapi.testclient import TestClient
