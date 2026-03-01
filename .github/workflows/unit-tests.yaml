@@ -1,0 +1,69 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Test ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ai-agent, example-service]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check service directory exists
+        id: check
+        run: |
+          if [ -d "../${{ matrix.service }}" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::${{ matrix.service }}/ directory not found, skipping"
+          fi
+        working-directory: .
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.exists == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.check.outputs.exists == 'true'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          uv pip install --system -r requirements.txt
+          uv pip install --system pytest pytest-cov
+
+      - name: Run tests with coverage
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          python -m pytest tests/ \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-fail-under=80 \
+            -v
+
+      - name: Upload coverage report
+        if: steps.check.outputs.exists == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.service }}
+          path: |
+            ${{ matrix.service }}/coverage.xml
+            ${{ matrix.service }}/htmlcov/
+          retention-days: 14
