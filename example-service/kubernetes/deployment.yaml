@@ -25,6 +25,10 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           livenessProbe:
             httpGet:
               path: /health

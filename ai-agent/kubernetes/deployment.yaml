@@ -23,13 +23,26 @@ spec:
           env:
             - name: OPENSLO_DIR
               value: /openslo
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
           resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
             limits:
               memory: "128Mi"
               cpu: "250m"
