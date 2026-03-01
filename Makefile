@@ -3,17 +3,18 @@
 # Namespace-isolated deployments for parallel testing.
 # Cluster-level targets (shared): kind-up, kind-down, images
 # Namespace-level targets (per TEST_NS): deploy, undeploy, monitoring-up,
-#   openslo-deploy, rules-deploy, agent-deploy, service-deploy,
-#   exercise-normal, exercise-breach
+#   agent-deploy, service-deploy, openslo-deploy, servicemonitor-deploy,
+#   rules-deploy, exercise-normal, exercise-breach
 
 .PHONY: all help kind-up kind-down images \
 	deploy undeploy monitoring-up agent-deploy service-deploy \
-	openslo-deploy rules-deploy exercise-normal exercise-breach clean
+	servicemonitor-deploy rules-deploy openslo-deploy \
+	exercise-normal exercise-breach clean
 
 # --- Configuration ---
 KIND_CLUSTER_NAME ?= podman-poc-cluster
 KIND_RUNTIME      := podman
-GEMINI_TMP_DIR    ?= /Users/whit/.gemini/tmp/1a93520244d34034b85edcaf49363e36b9daf386fab35bdd7158f71fa937dd9e
+GEMINI_TMP_DIR    ?= $(HOME)/.cache/enriched-alert
 
 # Namespace isolation: set TEST_NS to run parallel deploys.
 #   make deploy TEST_NS=test-alpha
@@ -57,7 +58,7 @@ clean: kind-down ## Cleans up the Kind cluster and all deployments
 kind-up: ## Creates the Kind Kubernetes cluster using Podman
 	@echo "Creating Kind cluster '$(KIND_CLUSTER_NAME)' with Podman runtime..."
 	@mkdir -p $(GEMINI_TMP_DIR)
-	@KIND_CONTAINER_RUNTIME=$(KIND_RUNTIME) kind create cluster --name $(KIND_CLUSTER_NAME) || true
+	@KIND_CONTAINER_RUNTIME=$(KIND_RUNTIME) kind create cluster --name $(KIND_CLUSTER_NAME) --config kind-config.yaml || true
 	@echo "Kind cluster '$(KIND_CLUSTER_NAME)' is up."
 	@kubectl cluster-info --context kind-$(KIND_CLUSTER_NAME)
 
@@ -88,7 +89,7 @@ service-load: service-build
 # Namespace-level targets (per TEST_NS)
 # ============================================================================
 
-deploy: monitoring-up agent-deploy service-deploy openslo-deploy rules-deploy ## Deploy all components into TEST_NS
+deploy: monitoring-up agent-deploy service-deploy openslo-deploy servicemonitor-deploy rules-deploy ## Deploy all components into TEST_NS
 	@echo "All components deployed to namespace '$(TEST_NS)'."
 
 undeploy: ## Tear down TEST_NS and its monitoring namespace
@@ -116,40 +117,44 @@ monitoring-up: ## Deploy Prometheus and Alertmanager via Helm into MONITORING_NS
 agent-deploy: ## Deploy the AI agent into TEST_NS
 	@echo "Deploying AI agent to namespace '$(TEST_NS)'..."
 	@kubectl create namespace $(TEST_NS) --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl apply -n $(TEST_NS) -f ./kubernetes/agent-deployment.yaml
+	@kubectl apply -n $(TEST_NS) -f ./ai-agent/kubernetes/deployment.yaml
+	@kubectl apply -n $(TEST_NS) -f ./ai-agent/kubernetes/service.yaml
 
 service-deploy: ## Deploy the example service into TEST_NS
 	@echo "Deploying example service to namespace '$(TEST_NS)'..."
 	@kubectl create namespace $(TEST_NS) --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl apply -n $(TEST_NS) -f ./kubernetes/service-deployment.yaml
+	@kubectl apply -n $(TEST_NS) -f ./example-service/kubernetes/deployment.yaml
+	@kubectl apply -n $(TEST_NS) -f ./example-service/kubernetes/service.yaml
 
 openslo-deploy: ## Deploy OpenSLO definitions into TEST_NS
 	@echo "Deploying OpenSLO definitions to namespace '$(TEST_NS)'..."
 	@kubectl create namespace $(TEST_NS) --dry-run=client -o yaml | kubectl apply -f -
-	@if [ -d "./kubernetes/openslo" ]; then \
-		kubectl apply -n $(TEST_NS) -f ./kubernetes/openslo/; \
+	@if [ -d "./openslo" ]; then \
+		kubectl apply -n $(TEST_NS) -f ./openslo/; \
 	else \
-		echo "  (no openslo manifests found in ./kubernetes/openslo/ - skipping)"; \
+		echo "  (no openslo manifests found in ./openslo/ - skipping)"; \
 	fi
 
-rules-deploy: ## Deploy Prometheus rules into MONITORING_NS
-	@echo "Deploying Prometheus rules to namespace '$(MONITORING_NS)'..."
-	@if [ -d "./kubernetes/rules" ]; then \
-		kubectl apply -n $(MONITORING_NS) -f ./kubernetes/rules/; \
-	else \
-		echo "  (no rules found in ./kubernetes/rules/ - skipping)"; \
-	fi
+servicemonitor-deploy: ## Deploy ServiceMonitor into MONITORING_NS
+	@echo "Deploying ServiceMonitor to namespace '$(MONITORING_NS)'..."
+	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -n $(MONITORING_NS) -f ./kubernetes/monitoring/service-monitor.yaml
+
+rules-deploy: ## Deploy PrometheusRules into MONITORING_NS
+	@echo "Deploying PrometheusRules to namespace '$(MONITORING_NS)'..."
+	@kubectl create namespace $(MONITORING_NS) --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -n $(MONITORING_NS) -f ./kubernetes/monitoring/prometheus-rules.yaml
 
 exercise-normal: ## Send normal traffic to the example service in TEST_NS
 	@echo "Exercising normal traffic in namespace '$(TEST_NS)'..."
 	@kubectl run exerciser-normal-$(TEST_NS) --rm -i --restart=Never \
 		-n $(TEST_NS) \
 		--image=curlimages/curl -- \
-		sh -c 'for i in $$(seq 1 100); do curl -s http://example-service.$(TEST_NS).svc.cluster.local:8080/health; done'
+		sh -c 'for i in $$(seq 1 100); do curl -s http://example-service.$(TEST_NS).svc.cluster.local:80/health; done'
 
 exercise-breach: ## Send breach-inducing traffic to the example service in TEST_NS
 	@echo "Exercising breach traffic in namespace '$(TEST_NS)'..."
 	@kubectl run exerciser-breach-$(TEST_NS) --rm -i --restart=Never \
 		-n $(TEST_NS) \
 		--image=curlimages/curl -- \
-		sh -c 'for i in $$(seq 1 100); do curl -s http://example-service.$(TEST_NS).svc.cluster.local:8080/latency?delay=2000; curl -s http://example-service.$(TEST_NS).svc.cluster.local:8080/error; done'
+		sh -c 'for i in $$(seq 1 100); do curl -s "http://example-service.$(TEST_NS).svc.cluster.local:80/latency?delay_ms=2000"; curl -s http://example-service.$(TEST_NS).svc.cluster.local:80/error; done'
