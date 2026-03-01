@@ -1,0 +1,47 @@
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: example-service-latency
+  displayName: Example Service Latency SLO
+spec:
+  service: example-service
+  description: 99th percentile latency must be under 500ms over a 5-minute window
+  budgetingMethod: Occurrences
+  objectives:
+    - displayName: Request latency p99 < 500ms
+      target: 0.99
+      ratioMetrics:
+        good:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: >-
+                sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m]))
+        total:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: >-
+                sum(rate(http_request_duration_seconds_count[5m]))
+  timeWindow:
+    - duration: 5m
+      isRolling: true
+  alertPolicies:
+    - kind: AlertPolicy
+      metadata:
+        name: example-service-latency-breach
+        labels:
+          slo_name: example-service-latency
+      spec:
+        description: Latency SLO breach for example-service
+        alertWhenBreaching: true
+        conditions:
+          - kind: AlertCondition
+            spec:
+              condition:
+                kind: burnrate
+                threshold: 1
+                lookbackWindow: 5m
+              alertAfter: 1m
+        notificationTargets:
+          - targetRef: alertmanager-webhook

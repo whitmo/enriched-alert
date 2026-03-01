@@ -1,0 +1,28 @@
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: example-service-error-rate
+  displayName: Example Service Error Rate SLO
+spec:
+  service: example-service
+  description: Error rate must be below 1% over a 5-minute window
+  budgetingMethod: Occurrences
+  objectives:
+    - displayName: Error rate < 1%
+      target: 0.99
+      ratioMetrics:
+        good:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: >-
+                sum(rate(http_requests_total{status_code!~"5.."}[5m]))
+        total:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: >-
+                sum(rate(http_requests_total[5m]))
+  timeWindow:
+    - duration: 5m
+      isRolling: true
