@@ -15,7 +15,7 @@ alertmanager:
       - name: default
       - name: ai-agent
         webhook_configs:
-          - url: http://ai-agent.default.svc.cluster.local/alert
+          - url: http://ai-agent.{{ .Release.Namespace }}.svc.cluster.local/alert
             send_resolved: true
   service:
     type: NodePort

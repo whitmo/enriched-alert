@@ -26,3 +26,22 @@ spec:
   timeWindow:
     - duration: 5m
       isRolling: true
+  alertPolicies:
+    - kind: AlertPolicy
+      metadata:
+        name: example-service-error-rate-breach
+        labels:
+          slo_name: example-service-error-rate
+      spec:
+        description: Error rate SLO breach for example-service
+        alertWhenBreaching: true
+        conditions:
+          - kind: AlertCondition
+            spec:
+              condition:
+                kind: burnrate
+                threshold: 1
+                lookbackWindow: 5m
+              alertAfter: 1m
+        notificationTargets:
+          - targetRef: alertmanager-webhook
