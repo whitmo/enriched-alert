@@ -23,21 +23,39 @@ spec:
           env:
             - name: OPENSLO_DIR
               value: /openslo
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: openslo-definitions
+              mountPath: /openslo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
           resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
             limits:
               memory: "128Mi"
               cpu: "250m"
-          volumeMounts:
-            - name: openslo-definitions
-              mountPath: /openslo
-              readOnly: true
       volumes:
         - name: openslo-definitions
           configMap:
             name: openslo-definitions
+        - name: tmp
+          emptyDir: {}

@@ -25,6 +25,14 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /health
@@ -44,3 +52,6 @@ spec:
             limits:
               memory: "128Mi"
               cpu: "250m"
+      volumes:
+        - name: tmp
+          emptyDir: {}

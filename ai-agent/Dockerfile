@@ -2,12 +2,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /usr/local/bin/uv
 
 COPY requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
+RUN groupadd --system --gid 1000 appuser && useradd --system --uid 1000 --gid appuser --no-log-init appuser
+
 COPY app.py .
+
+RUN chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8080
 
