@@ -7,7 +7,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /usr/local/bin/uv
 COPY requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
-RUN groupadd --system appuser && useradd --system --gid appuser appuser
+RUN groupadd --system --gid 1000 appuser && useradd --system --uid 1000 --gid appuser --no-log-init appuser
 
 COPY app.py .
 

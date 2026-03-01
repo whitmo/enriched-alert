@@ -25,8 +25,15 @@ spec:
               value: /openslo
           securityContext:
             runAsNonRoot: true
+            runAsUser: 1000
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: openslo-definitions
+              mountPath: /openslo
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /health
@@ -46,11 +53,9 @@ spec:
             limits:
               memory: "128Mi"
               cpu: "250m"
-          volumeMounts:
-            - name: openslo-definitions
-              mountPath: /openslo
-              readOnly: true
       volumes:
         - name: openslo-definitions
           configMap:
             name: openslo-definitions
+        - name: tmp
+          emptyDir: {}
