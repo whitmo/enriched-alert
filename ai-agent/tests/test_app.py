@@ -86,6 +86,7 @@ def test_alert_missing_slo_name(client):
     assert data["reason"] == "no slo_name label found"
 
 
+
 def test_alert_path_traversal(client, openslo_dir):
     """slo_name with path traversal should be rejected, not read files outside OPENSLO_DIR."""
     # Create a file outside the openslo dir that should NOT be reachable

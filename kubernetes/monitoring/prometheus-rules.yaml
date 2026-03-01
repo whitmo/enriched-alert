@@ -15,7 +15,7 @@ spec:
             rate(http_request_duration_seconds_count[5m])
         - record: slo:example_service_error_rate:ratio_rate5m
           expr: |
-            rate(http_requests_total{status=~"5.."}[5m])
+            rate(http_requests_total{status_code=~"5.."}[5m])
             /
             rate(http_requests_total[5m])
     - name: slo.alerting
