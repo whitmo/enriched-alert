@@ -3,7 +3,7 @@
 import asyncio
 import time
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Query, Request, Response
 from prometheus_client import (
     Counter,
     Histogram,
@@ -12,6 +12,9 @@ from prometheus_client import (
 )
 
 app = FastAPI(title="Example Service")
+
+# Known routes for metric label normalization (prevents cardinality explosion)
+KNOWN_ROUTES = frozenset({"/health", "/api", "/latency", "/error"})
 
 # Prometheus metrics
 REQUEST_DURATION = Histogram(
@@ -28,6 +31,11 @@ REQUEST_COUNT = Counter(
 )
 
 
+def _normalize_endpoint(path: str) -> str:
+    """Map request paths to known routes; unknown paths become '/other'."""
+    return path if path in KNOWN_ROUTES else "/other"
+
+
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     # Skip metrics endpoint itself to avoid recursion in counts
@@ -38,7 +46,7 @@ async def metrics_middleware(request: Request, call_next):
     response = await call_next(request)
     duration = time.perf_counter() - start
 
-    endpoint = request.url.path
+    endpoint = _normalize_endpoint(request.url.path)
     method = request.method
     status_code = str(response.status_code)
 
@@ -63,14 +71,14 @@ async def api():
 
 
 @app.get("/latency")
-async def latency(delay_ms: int = 0):
+async def latency(delay_ms: int = Query(0, ge=0, le=10000)):
     if delay_ms > 0:
         await asyncio.sleep(delay_ms / 1000.0)
     return {"delay_ms": delay_ms}
 
 
 @app.get("/error")
-async def error(code: int = 500):
+async def error(code: int = Query(500, ge=400, le=599)):
     return Response(
         content=f'{{"error": "simulated", "code": {code}}}',
         status_code=code,
