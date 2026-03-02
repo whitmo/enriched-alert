@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,23 @@ SLO_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # K8s label/name validation: lowercase alphanumeric with hyphens, must start with alnum
 K8S_NAME_RE = re.compile(r"^[a-z0-9][-a-z0-9]*$")
 
-app = FastAPI(title="AI Agent Webhook Receiver")
+# Shared HTTP client — set during lifespan, used by gathering functions
+http_client: httpx.AsyncClient | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global http_client
+    http_client = httpx.AsyncClient(
+        timeout=5.0,
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    )
+    yield
+    await http_client.aclose()
+    http_client = None
+
+
+app = FastAPI(title="AI Agent Webhook Receiver", lifespan=lifespan)
 
 
 class Alert(BaseModel):
@@ -51,7 +69,9 @@ def _k8s_ssl_context() -> bool | str:
     return True
 
 
-async def gather_k8s_events(deployment: str, namespace: str = "default") -> list[dict]:
+async def gather_k8s_events(
+    deployment: str, namespace: str = "default", client: httpx.AsyncClient | None = None
+) -> list[dict]:
     """Fetch recent K8s events for a deployment from the K8s API."""
     if not K8S_NAME_RE.match(deployment):
         logger.warning("Rejected invalid deployment name: '%s'", deployment)
@@ -71,45 +91,53 @@ async def gather_k8s_events(deployment: str, namespace: str = "default") -> list
         f"?fieldSelector={field_selector}&limit=20"
     )
 
+    c = client or http_client
+    if c is None:
+        logger.warning("No HTTP client available for K8s events gathering")
+        return []
     try:
-        async with httpx.AsyncClient(verify=_k8s_ssl_context(), timeout=5.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            return [
-                {
-                    "reason": item.get("reason"),
-                    "message": item.get("message"),
-                    "type": item.get("type"),
-                    "last_timestamp": item.get("lastTimestamp"),
-                }
-                for item in data.get("items", [])
-            ]
+        resp = await c.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        return [
+            {
+                "reason": item.get("reason"),
+                "message": item.get("message"),
+                "type": item.get("type"),
+                "last_timestamp": item.get("lastTimestamp"),
+            }
+            for item in data.get("items", [])
+        ]
     except (httpx.HTTPError, json.JSONDecodeError) as exc:
         logger.warning("Failed to gather K8s events for '%s': %s", deployment, exc)
         return []
 
 
-async def gather_burn_rate(slo_name: str) -> dict | None:
+async def gather_burn_rate(
+    slo_name: str, client: httpx.AsyncClient | None = None
+) -> dict | None:
     """Query Prometheus for the current burn rate of an SLO."""
     query = f'slo:burn_rate:1h{{slo_name="{slo_name}"}}'
     url = f"{PROMETHEUS_URL}/api/v1/query"
 
+    c = client or http_client
+    if c is None:
+        logger.warning("No HTTP client available for burn rate gathering")
+        return None
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, params={"query": query})
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("data", {}).get("result", [])
-            if results:
-                value = results[0].get("value", [None, None])
-                return {
-                    "slo_name": slo_name,
-                    "query": query,
-                    "value": float(value[1]) if value[1] is not None else None,
-                    "timestamp": value[0],
-                }
-            return {"slo_name": slo_name, "query": query, "value": None, "timestamp": None}
+        resp = await c.get(url, params={"query": query})
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("data", {}).get("result", [])
+        if results:
+            value = results[0].get("value", [None, None])
+            return {
+                "slo_name": slo_name,
+                "query": query,
+                "value": float(value[1]) if value[1] is not None else None,
+                "timestamp": value[0],
+            }
+        return {"slo_name": slo_name, "query": query, "value": None, "timestamp": None}
     except (httpx.HTTPError, json.JSONDecodeError) as exc:
         logger.warning("Failed to gather burn rate for '%s': %s", slo_name, exc)
         return None
@@ -167,11 +195,13 @@ async def receive_alert(payload: AlertmanagerPayload):
     else:
         logger.warning("No OpenSLO definition found for '%s' at %s", slo_name, slo_file)
 
-    # Gather structured context: K8s events and burn rate
+    # Gather structured context concurrently
     deployment = payload.commonLabels.get("deployment", slo_name)
     namespace = payload.commonLabels.get("namespace", "default")
-    k8s_events = await gather_k8s_events(deployment, namespace)
-    burn_rate = await gather_burn_rate(slo_name)
+    k8s_events, burn_rate = await asyncio.gather(
+        gather_k8s_events(deployment, namespace),
+        gather_burn_rate(slo_name),
+    )
 
     logger.info(
         "Enriched alert context - SLO: '%s', Definition found: %s, Events: %d, Burn rate: %s",
