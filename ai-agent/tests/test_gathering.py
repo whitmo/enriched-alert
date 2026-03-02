@@ -1,7 +1,9 @@
 """Tests for gather_k8s_events and gather_burn_rate functions."""
 
+import asyncio
 import importlib
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -70,11 +72,8 @@ async def test_gather_k8s_events_success(app_module):
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        events = await app_module.gather_k8s_events("my-deploy", "default")
+    events = await app_module.gather_k8s_events("my-deploy", "default", client=mock_client)
 
     assert len(events) == 2
     assert events[0]["reason"] == "Pulled"
@@ -92,11 +91,8 @@ async def test_gather_k8s_events_empty(app_module):
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        events = await app_module.gather_k8s_events("nonexistent")
+    events = await app_module.gather_k8s_events("nonexistent", client=mock_client)
 
     assert events == []
 
@@ -106,11 +102,8 @@ async def test_gather_k8s_events_http_error(app_module):
     """Should return empty list on HTTP error."""
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        events = await app_module.gather_k8s_events("my-deploy")
+    events = await app_module.gather_k8s_events("my-deploy", client=mock_client)
 
     assert events == []
 
@@ -137,11 +130,8 @@ async def test_gather_burn_rate_success(app_module):
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        result = await app_module.gather_burn_rate("my-service-latency")
+    result = await app_module.gather_burn_rate("my-service-latency", client=mock_client)
 
     assert result is not None
     assert result["slo_name"] == "my-service-latency"
@@ -160,11 +150,8 @@ async def test_gather_burn_rate_no_results(app_module):
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        result = await app_module.gather_burn_rate("unknown-slo")
+    result = await app_module.gather_burn_rate("unknown-slo", client=mock_client)
 
     assert result is not None
     assert result["slo_name"] == "unknown-slo"
@@ -176,13 +163,66 @@ async def test_gather_burn_rate_http_error(app_module):
     """Should return None on HTTP error."""
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        result = await app_module.gather_burn_rate("my-service-latency")
+    result = await app_module.gather_burn_rate("my-service-latency", client=mock_client)
 
     assert result is None
+
+
+# --- Concurrency test ---
+
+
+@pytest.mark.anyio
+async def test_gather_functions_run_concurrently(app_module):
+    """Both gather functions should run concurrently via asyncio.gather, not sequentially."""
+    call_log = []
+
+    async def slow_k8s_get(url, **kwargs):
+        call_log.append(("k8s_start", time.monotonic()))
+        await asyncio.sleep(0.1)
+        call_log.append(("k8s_end", time.monotonic()))
+        resp = MagicMock()
+        resp.json.return_value = {"items": []}
+        return resp
+
+    async def slow_prom_get(url, **kwargs):
+        call_log.append(("prom_start", time.monotonic()))
+        await asyncio.sleep(0.1)
+        call_log.append(("prom_end", time.monotonic()))
+        resp = MagicMock()
+        resp.json.return_value = {"status": "success", "data": {"result": []}}
+        return resp
+
+    mock_client = AsyncMock()
+    # Route calls based on URL
+    async def dispatch_get(url, **kwargs):
+        if "events" in url:
+            return await slow_k8s_get(url, **kwargs)
+        return await slow_prom_get(url, **kwargs)
+
+    mock_client.get = dispatch_get
+
+    app_module.http_client = mock_client
+    try:
+        start = time.monotonic()
+        k8s_events, burn_rate = await asyncio.gather(
+            app_module.gather_k8s_events("my-deploy", "default"),
+            app_module.gather_burn_rate("my-slo"),
+        )
+        elapsed = time.monotonic() - start
+
+        # If sequential, would take ~0.2s. Concurrent should be ~0.1s.
+        assert elapsed < 0.18, f"Took {elapsed:.3f}s — likely sequential, not concurrent"
+
+        # Verify both started before either finished
+        starts = [t for name, t in call_log if name.endswith("_start")]
+        ends = [t for name, t in call_log if name.endswith("_end")]
+        assert len(starts) == 2
+        assert len(ends) == 2
+        # Both should start before the first one ends
+        assert max(starts) < min(ends), "Functions did not overlap — not concurrent"
+    finally:
+        app_module.http_client = None
 
 
 # --- Integration: /alert endpoint with mocked gathering ---
@@ -298,11 +338,8 @@ async def test_gather_k8s_events_json_decode_error(app_module):
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        events = await app_module.gather_k8s_events("my-deploy", "default")
+    events = await app_module.gather_k8s_events("my-deploy", "default", client=mock_client)
 
     assert events == []
 
@@ -315,11 +352,8 @@ async def test_gather_burn_rate_json_decode_error(app_module):
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.httpx.AsyncClient", return_value=mock_client):
-        result = await app_module.gather_burn_rate("my-service-latency")
+    result = await app_module.gather_burn_rate("my-service-latency", client=mock_client)
 
     assert result is None
 
