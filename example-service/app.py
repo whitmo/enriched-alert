@@ -104,6 +104,8 @@ async def error(code: int = Query(500, ge=400, le=599)):
 
 # Module-level store for resource-exhaustion allocations (prevents GC)
 _memory_store: list[bytes] = []
+MEMORY_CAP_BYTES = 512 * 1024 * 1024  # 512 MB aggregate cap
+_memory_allocated = 0  # current aggregate bytes held
 
 
 @app.get("/cascade-failure")
@@ -115,7 +117,7 @@ async def cascade_failure(
     failed_hops = [hop for hop in range(depth) if random.random() < failure_prob]
 
     if failed_hops:
-        CASCADE_FAILURES.labels(depth=str(depth)).inc()
+        CASCADE_FAILURES.labels(depth=depth).inc()
         return Response(
             content=json.dumps(
                 {
@@ -137,15 +139,31 @@ async def resource_exhaustion(
     hold_seconds: int = Query(30, ge=1, le=300),
 ):
     """Allocate memory to simulate resource pressure, release after hold_seconds."""
-    chunk = b"\x00" * (mb * 1024 * 1024)
+    global _memory_allocated
+    requested = mb * 1024 * 1024
+    if _memory_allocated + requested > MEMORY_CAP_BYTES:
+        return Response(
+            content=json.dumps({
+                "error": "memory_cap_exceeded",
+                "allocated_bytes": _memory_allocated,
+                "cap_bytes": MEMORY_CAP_BYTES,
+            }),
+            status_code=429,
+            media_type="application/json",
+        )
+
+    chunk = b"\x00" * requested
     _memory_store.append(chunk)
-    MEMORY_PRESSURE_BYTES.inc(mb * 1024 * 1024)
+    _memory_allocated += requested
+    MEMORY_PRESSURE_BYTES.inc(requested)
 
     async def _release():
+        global _memory_allocated
         await asyncio.sleep(hold_seconds)
         try:
             _memory_store.remove(chunk)
-            MEMORY_PRESSURE_BYTES.dec(mb * 1024 * 1024)
+            _memory_allocated -= requested
+            MEMORY_PRESSURE_BYTES.dec(requested)
         except ValueError:
             pass
 

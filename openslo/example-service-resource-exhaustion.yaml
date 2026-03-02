@@ -10,19 +10,14 @@ spec:
   objectives:
     - displayName: Memory pressure < 256MB
       target: 0.95
-      ratioMetrics:
-        good:
-          metricSource:
-            type: Prometheus
-            spec:
-              query: >-
-                count(memory_pressure_bytes < 268435456) OR vector(1)
-        total:
-          metricSource:
-            type: Prometheus
-            spec:
-              query: >-
-                vector(1)
+      op: lt
+      value: 268435456
+      thresholdMetric:
+        metricSource:
+          type: Prometheus
+          spec:
+            query: >-
+              memory_pressure_bytes
   timeWindow:
     - duration: 5m
       isRolling: true

@@ -1,9 +1,25 @@
 """Tests for the example service."""
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
-from app import app
+import app as app_module
+from app import app, MEMORY_PRESSURE_BYTES
+
+
+@pytest.fixture(autouse=True)
+def _reset_memory_state():
+    """Reset module-level memory state between tests."""
+    app_module._memory_store.clear()
+    app_module._memory_allocated = 0
+    MEMORY_PRESSURE_BYTES.set(0)
+    yield
+    app_module._memory_store.clear()
+    app_module._memory_allocated = 0
+    MEMORY_PRESSURE_BYTES.set(0)
 
 
 @pytest.fixture
@@ -132,3 +148,44 @@ def test_metrics_memory_pressure(client):
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "memory_pressure_bytes" in resp.text
+
+
+def test_resource_exhaustion_memory_cap(client):
+    """Allocating beyond the aggregate cap returns 429."""
+    # Set a low cap for testing
+    original_cap = app_module.MEMORY_CAP_BYTES
+    app_module.MEMORY_CAP_BYTES = 2 * 1024 * 1024  # 2 MB
+    try:
+        resp = client.get("/resource-exhaustion?mb=1&hold_seconds=300")
+        assert resp.status_code == 200
+        resp = client.get("/resource-exhaustion?mb=1&hold_seconds=300")
+        assert resp.status_code == 200
+        # Third request should exceed 2 MB cap
+        resp = client.get("/resource-exhaustion?mb=1&hold_seconds=300")
+        assert resp.status_code == 429
+        data = resp.json()
+        assert data["error"] == "memory_cap_exceeded"
+    finally:
+        app_module.MEMORY_CAP_BYTES = original_cap
+
+
+@pytest.mark.asyncio
+async def test_resource_exhaustion_async_release():
+    """Verify _memory_store shrinks and gauge decreases after hold_seconds."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/resource-exhaustion?mb=1&hold_seconds=1")
+        assert resp.status_code == 200
+
+        # Memory should be allocated
+        assert len(app_module._memory_store) == 1
+        assert app_module._memory_allocated == 1 * 1024 * 1024
+        assert MEMORY_PRESSURE_BYTES._value.get() == 1 * 1024 * 1024
+
+        # Wait for the release task to fire
+        await asyncio.sleep(1.5)
+
+        # Memory should be released
+        assert len(app_module._memory_store) == 0
+        assert app_module._memory_allocated == 0
+        assert MEMORY_PRESSURE_BYTES._value.get() == 0
