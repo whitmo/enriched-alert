@@ -65,6 +65,9 @@ def test_alert_valid_payload(client):
     assert data["slo_name"] == "my-service-latency"
     assert data["slo_definition"] is not None
     assert data["slo_definition"]["kind"] == "SLO"
+    assert "context" in data
+    assert "k8s_events" in data["context"]
+    assert "burn_rate" in data["context"]
 
 
 def test_alert_missing_slo_name(client):
@@ -88,8 +91,7 @@ def test_alert_missing_slo_name(client):
 
 
 def test_alert_path_traversal(client, openslo_dir):
-    """slo_name with path traversal should be rejected, not read files outside OPENSLO_DIR."""
-    # Create a file outside the openslo dir that should NOT be reachable
+    """slo_name with path traversal should be rejected by regex validation."""
     outside_file = openslo_dir.parent / "secret.yaml"
     outside_file.write_text("secret: data")
 
@@ -100,10 +102,10 @@ def test_alert_path_traversal(client, openslo_dir):
             "alerts": [],
         }
         response = client.post("/alert", json=payload)
-        assert response.status_code == 200
+        assert response.status_code == 400, f"Failed for slo_name={malicious_name}"
         data = response.json()
-        assert data["enriched"] is False
-        assert data["reason"] == "invalid slo_name", f"Failed for slo_name={malicious_name}"
+        assert data["status"] == "rejected"
+        assert data["reason"] == "invalid slo_name format"
 
 
 def test_alert_malformed_yaml(client, openslo_dir):
