@@ -1,13 +1,20 @@
 import pytest
 import yaml
 
-from routing import calculate_severity, lookup_runbook, route_alert
+from routing import calculate_severity, lookup_runbook, route_alert, _load_config
 
 
 @pytest.fixture
 def config_file(tmp_path):
     """Create a temporary routing config for tests."""
     config = {
+        "slo_suffixes": [
+            "latency-p99",
+            "error-rate",
+            "latency",
+            "availability",
+            "throughput",
+        ],
         "severity_thresholds": [
             {"min_burn_rate": 10.0, "severity": "P1"},
             {"min_burn_rate": 2.0, "severity": "P2"},
@@ -84,6 +91,18 @@ class TestCalculateSeverity:
     def test_p3_just_below_p2(self, config_file):
         assert calculate_severity(1.99, config_path=config_file) == "P3"
 
+    def test_nan_burn_rate_returns_p1(self, config_file):
+        """NaN burn rate indicates data corruption — should be P1 (urgent)."""
+        assert calculate_severity(float("nan"), config_path=config_file) == "P1"
+
+    def test_negative_burn_rate_returns_p3(self, config_file):
+        """Negative burn rate is nonsensical — log warning, treat as P3."""
+        assert calculate_severity(-5.0, config_path=config_file) == "P3"
+
+    def test_none_burn_rate_returns_p3(self, config_file):
+        """None burn rate (missing data) — log warning, treat as P3."""
+        assert calculate_severity(None, config_path=config_file) == "P3"
+
 
 # --- lookup_runbook ---
 
@@ -108,6 +127,26 @@ class TestLookupRunbook:
     def test_no_hyphen_unknown(self, config_file):
         url = lookup_runbook("standalone", config_path=config_file)
         assert url == "https://runbooks.internal/unknown-service"
+
+    def test_multi_segment_error_rate(self, config_file):
+        """my-service-error-rate should match my-service via suffix stripping."""
+        url = lookup_runbook("my-service-error-rate", config_path=config_file)
+        assert url == "https://runbooks.internal/my-service"
+
+    def test_multi_segment_latency_p99(self, config_file):
+        """my-service-latency-p99 should match my-service via suffix stripping."""
+        url = lookup_runbook("my-service-latency-p99", config_path=config_file)
+        assert url == "https://runbooks.internal/my-service"
+
+    def test_multi_segment_payment_service_error_rate(self, config_file):
+        """payment-service-error-rate should match payment-service."""
+        url = lookup_runbook("payment-service-error-rate", config_path=config_file)
+        assert url == "https://runbooks.internal/payment-service"
+
+    def test_multi_segment_payment_service_latency_p99(self, config_file):
+        """payment-service-latency-p99 should match payment-service."""
+        url = lookup_runbook("payment-service-latency-p99", config_path=config_file)
+        assert url == "https://runbooks.internal/payment-service"
 
 
 # --- route_alert ---
@@ -158,3 +197,63 @@ class TestRouteAlert:
         assert "escalation" in result
         assert "channels" in result
         assert "notify_team" in result
+
+
+# --- config validation ---
+
+
+class TestConfigValidation:
+    def test_empty_config_raises(self, tmp_path):
+        path = tmp_path / "empty.yaml"
+        path.write_text("")
+        with pytest.raises(ValueError, match="empty or not a YAML mapping"):
+            _load_config(config_path=path)
+
+    def test_missing_severity_thresholds_raises(self, tmp_path):
+        path = tmp_path / "bad.yaml"
+        with open(path, "w") as f:
+            yaml.dump({"services": {}}, f)
+        with pytest.raises(ValueError, match="severity_thresholds must be a non-empty list"):
+            _load_config(config_path=path)
+
+    def test_invalid_severity_enum_raises(self, tmp_path):
+        config = {
+            "severity_thresholds": [
+                {"min_burn_rate": 10.0, "severity": "CRITICAL"},
+            ],
+        }
+        path = tmp_path / "bad_sev.yaml"
+        with open(path, "w") as f:
+            yaml.dump(config, f)
+        with pytest.raises(ValueError, match="invalid severity 'CRITICAL'"):
+            _load_config(config_path=path)
+
+    def test_non_descending_thresholds_raises(self, tmp_path):
+        config = {
+            "severity_thresholds": [
+                {"min_burn_rate": 2.0, "severity": "P2"},
+                {"min_burn_rate": 10.0, "severity": "P1"},
+            ],
+        }
+        path = tmp_path / "bad_order.yaml"
+        with open(path, "w") as f:
+            yaml.dump(config, f)
+        with pytest.raises(ValueError, match="not in descending order"):
+            _load_config(config_path=path)
+
+    def test_missing_keys_in_threshold_raises(self, tmp_path):
+        config = {
+            "severity_thresholds": [
+                {"min_burn_rate": 10.0},
+            ],
+        }
+        path = tmp_path / "bad_keys.yaml"
+        with open(path, "w") as f:
+            yaml.dump(config, f)
+        with pytest.raises(ValueError, match="missing required keys"):
+            _load_config(config_path=path)
+
+    def test_valid_config_loads(self, config_file):
+        """A well-formed config should load without error."""
+        cfg = _load_config(config_path=config_file)
+        assert "severity_thresholds" in cfg

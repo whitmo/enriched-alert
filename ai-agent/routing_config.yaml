@@ -1,6 +1,15 @@
 # Phase 2: Deterministic alert routing configuration
 # Maps burn rates to severities, services to owners/runbooks, and severities to destinations.
 
+# Known SLO type suffixes, longest-first for greedy matching.
+# Used by lookup_runbook to strip the SLO type from the name to find the service.
+slo_suffixes:
+  - latency-p99
+  - error-rate
+  - latency
+  - availability
+  - throughput
+
 severity_thresholds:
   # Ordered highest-to-lowest. First match wins.
   - min_burn_rate: 10.0
