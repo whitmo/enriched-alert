@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -17,8 +18,14 @@ OPENSLO_DIR = Path(os.environ.get("OPENSLO_DIR", "./openslo")).resolve()
 K8S_API_URL = os.environ.get("K8S_API_URL", "https://kubernetes.default.svc")
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus.monitoring.svc:9090")
 
+# K8s in-cluster CA cert path; override with K8S_CA_CERT env var for dev
+_K8S_CA_CERT_DEFAULT = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+K8S_CA_CERT = os.environ.get("K8S_CA_CERT", _K8S_CA_CERT_DEFAULT)
+
 # Only allow alphanumeric, hyphens, and underscores in SLO names
 SLO_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# K8s label/name validation: lowercase alphanumeric with hyphens, must start with alnum
+K8S_NAME_RE = re.compile(r"^[a-z0-9][-a-z0-9]*$")
 
 app = FastAPI(title="AI Agent Webhook Receiver")
 
@@ -36,8 +43,23 @@ class AlertmanagerPayload(BaseModel):
     model_config = {"extra": "allow"}
 
 
+def _k8s_ssl_context() -> bool | str:
+    """Return CA cert path for K8s TLS verification, or True for system defaults."""
+    ca_path = Path(K8S_CA_CERT)
+    if ca_path.exists():
+        return str(ca_path)
+    return True
+
+
 async def gather_k8s_events(deployment: str, namespace: str = "default") -> list[dict]:
     """Fetch recent K8s events for a deployment from the K8s API."""
+    if not K8S_NAME_RE.match(deployment):
+        logger.warning("Rejected invalid deployment name: '%s'", deployment)
+        return []
+    if not K8S_NAME_RE.match(namespace):
+        logger.warning("Rejected invalid namespace: '%s'", namespace)
+        return []
+
     token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
     headers = {}
     if token_path.exists():
@@ -50,7 +72,7 @@ async def gather_k8s_events(deployment: str, namespace: str = "default") -> list
     )
 
     try:
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+        async with httpx.AsyncClient(verify=_k8s_ssl_context(), timeout=5.0) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             data = resp.json()
@@ -63,7 +85,7 @@ async def gather_k8s_events(deployment: str, namespace: str = "default") -> list
                 }
                 for item in data.get("items", [])
             ]
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
         logger.warning("Failed to gather K8s events for '%s': %s", deployment, exc)
         return []
 
@@ -88,7 +110,7 @@ async def gather_burn_rate(slo_name: str) -> dict | None:
                     "timestamp": value[0],
                 }
             return {"slo_name": slo_name, "query": query, "value": None, "timestamp": None}
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
         logger.warning("Failed to gather burn rate for '%s': %s", slo_name, exc)
         return None
 

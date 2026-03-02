@@ -1,6 +1,7 @@
 """Tests for gather_k8s_events and gather_burn_rate functions."""
 
 import importlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -260,3 +261,83 @@ def test_alert_context_graceful_on_gather_failure(client):
     assert data["context"]["k8s_events"] == []
     assert data["context"]["burn_rate"] is None
     assert data["enriched"] is True  # SLO definition still found
+
+
+# --- Input validation tests ---
+
+
+@pytest.mark.anyio
+async def test_gather_k8s_events_rejects_invalid_deployment(app_module):
+    """Should reject deployment names that don't match K8s naming rules."""
+    events = await app_module.gather_k8s_events("../../etc/passwd", "default")
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_gather_k8s_events_rejects_invalid_namespace(app_module):
+    """Should reject namespace names that don't match K8s naming rules."""
+    events = await app_module.gather_k8s_events("my-deploy", "INVALID_NS")
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_gather_k8s_events_rejects_uppercase(app_module):
+    """Uppercase names are invalid K8s resource names."""
+    events = await app_module.gather_k8s_events("MyDeploy", "default")
+    assert events == []
+
+
+# --- JSON decode error tests ---
+
+
+@pytest.mark.anyio
+async def test_gather_k8s_events_json_decode_error(app_module):
+    """Should return empty list on JSON decode error."""
+    mock_response = MagicMock()
+    mock_response.json.side_effect = json.JSONDecodeError("bad json", "", 0)
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.httpx.AsyncClient", return_value=mock_client):
+        events = await app_module.gather_k8s_events("my-deploy", "default")
+
+    assert events == []
+
+
+@pytest.mark.anyio
+async def test_gather_burn_rate_json_decode_error(app_module):
+    """Should return None on JSON decode error."""
+    mock_response = MagicMock()
+    mock_response.json.side_effect = json.JSONDecodeError("bad json", "", 0)
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.httpx.AsyncClient", return_value=mock_client):
+        result = await app_module.gather_burn_rate("my-service-latency")
+
+    assert result is None
+
+
+# --- TLS verification tests ---
+
+
+def test_k8s_ssl_context_uses_ca_cert_when_exists(app_module, tmp_path):
+    """Should return CA cert path when the file exists."""
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_text("fake-cert")
+    with patch.object(app_module, "K8S_CA_CERT", str(ca_file)):
+        result = app_module._k8s_ssl_context()
+    assert result == str(ca_file)
+
+
+def test_k8s_ssl_context_returns_true_when_no_cert(app_module):
+    """Should return True (system defaults) when CA cert doesn't exist."""
+    with patch.object(app_module, "K8S_CA_CERT", "/nonexistent/ca.crt"):
+        result = app_module._k8s_ssl_context()
+    assert result is True
