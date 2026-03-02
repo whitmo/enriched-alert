@@ -1,0 +1,52 @@
+# Phase 2: Deterministic alert routing configuration
+# Maps burn rates to severities, services to owners/runbooks, and severities to destinations.
+
+severity_thresholds:
+  # Ordered highest-to-lowest. First match wins.
+  - min_burn_rate: 10.0
+    severity: P1
+  - min_burn_rate: 2.0
+    severity: P2
+  - min_burn_rate: 0.0
+    severity: P3
+
+services:
+  my-service:
+    team: platform-eng
+    slack_channel: "#platform-alerts"
+    runbook_url: "https://runbooks.internal/my-service"
+  payment-service:
+    team: payments
+    slack_channel: "#payments-alerts"
+    runbook_url: "https://runbooks.internal/payment-service"
+  auth-service:
+    team: identity
+    slack_channel: "#identity-alerts"
+    runbook_url: "https://runbooks.internal/auth-service"
+
+routing_rules:
+  P1:
+    escalation: page
+    channels:
+      - "#incident-war-room"
+    notify_team: true
+  P2:
+    escalation: notify
+    channels:
+      - "#sre-alerts"
+    notify_team: true
+  P3:
+    escalation: log
+    channels:
+      - "#sre-low-priority"
+    notify_team: false
+
+defaults:
+  team: sre
+  slack_channel: "#sre-alerts"
+  runbook_url: "https://runbooks.internal/unknown-service"
+  routing:
+    escalation: notify
+    channels:
+      - "#sre-alerts"
+    notify_team: false
