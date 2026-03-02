@@ -1,0 +1,47 @@
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: example-service-resource-exhaustion
+  displayName: Example Service Resource Exhaustion SLO
+spec:
+  service: example-service
+  description: Memory pressure must stay below 256MB over a 5-minute window
+  budgetingMethod: Occurrences
+  objectives:
+    - displayName: Memory pressure < 256MB
+      target: 0.95
+      ratioMetrics:
+        good:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: >-
+                count(memory_pressure_bytes < 268435456) OR vector(1)
+        total:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: >-
+                vector(1)
+  timeWindow:
+    - duration: 5m
+      isRolling: true
+  alertPolicies:
+    - kind: AlertPolicy
+      metadata:
+        name: example-service-resource-exhaustion-breach
+        labels:
+          slo_name: example-service-resource-exhaustion
+      spec:
+        description: Resource exhaustion SLO breach for example-service
+        alertWhenBreaching: true
+        conditions:
+          - kind: AlertCondition
+            spec:
+              condition:
+                kind: burnrate
+                threshold: 1
+                lookbackWindow: 5m
+              alertAfter: 1m
+        notificationTargets:
+          - targetRef: alertmanager-webhook

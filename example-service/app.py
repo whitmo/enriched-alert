@@ -1,11 +1,14 @@
 """Example service with Prometheus metrics for SLO demonstration."""
 
 import asyncio
+import json
+import random
 import time
 
 from fastapi import FastAPI, Query, Request, Response
 from prometheus_client import (
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
     CONTENT_TYPE_LATEST,
@@ -14,7 +17,9 @@ from prometheus_client import (
 app = FastAPI(title="Example Service")
 
 # Known routes for metric label normalization (prevents cardinality explosion)
-KNOWN_ROUTES = frozenset({"/health", "/api", "/latency", "/error"})
+KNOWN_ROUTES = frozenset(
+    {"/health", "/api", "/latency", "/error", "/cascade-failure", "/resource-exhaustion"}
+)
 
 # Prometheus metrics
 REQUEST_DURATION = Histogram(
@@ -28,6 +33,17 @@ REQUEST_COUNT = Counter(
     "http_requests_total",
     "Total HTTP requests",
     labelnames=["method", "endpoint", "status_code"],
+)
+
+CASCADE_FAILURES = Counter(
+    "cascade_failure_total",
+    "Total cascade failure events (where at least one hop failed)",
+    labelnames=["depth"],
+)
+
+MEMORY_PRESSURE_BYTES = Gauge(
+    "memory_pressure_bytes",
+    "Current bytes held by resource-exhaustion simulation",
 )
 
 
@@ -84,6 +100,57 @@ async def error(code: int = Query(500, ge=400, le=599)):
         status_code=code,
         media_type="application/json",
     )
+
+
+# Module-level store for resource-exhaustion allocations (prevents GC)
+_memory_store: list[bytes] = []
+
+
+@app.get("/cascade-failure")
+async def cascade_failure(
+    depth: int = Query(3, ge=1, le=10),
+    failure_prob: float = Query(0.5, ge=0.0, le=1.0),
+):
+    """Simulate a chain of upstream calls; each hop fails with failure_prob."""
+    failed_hops = [hop for hop in range(depth) if random.random() < failure_prob]
+
+    if failed_hops:
+        CASCADE_FAILURES.labels(depth=str(depth)).inc()
+        return Response(
+            content=json.dumps(
+                {
+                    "error": "cascade_failure",
+                    "depth": depth,
+                    "failure_prob": failure_prob,
+                    "failed_hops": failed_hops,
+                }
+            ),
+            status_code=502,
+            media_type="application/json",
+        )
+    return {"depth": depth, "failure_prob": failure_prob, "failed_hops": []}
+
+
+@app.get("/resource-exhaustion")
+async def resource_exhaustion(
+    mb: int = Query(10, ge=1, le=512),
+    hold_seconds: int = Query(30, ge=1, le=300),
+):
+    """Allocate memory to simulate resource pressure, release after hold_seconds."""
+    chunk = b"\x00" * (mb * 1024 * 1024)
+    _memory_store.append(chunk)
+    MEMORY_PRESSURE_BYTES.inc(mb * 1024 * 1024)
+
+    async def _release():
+        await asyncio.sleep(hold_seconds)
+        try:
+            _memory_store.remove(chunk)
+            MEMORY_PRESSURE_BYTES.dec(mb * 1024 * 1024)
+        except ValueError:
+            pass
+
+    asyncio.create_task(_release())
+    return {"allocated_mb": mb, "hold_seconds": hold_seconds}
 
 
 @app.get("/metrics")
