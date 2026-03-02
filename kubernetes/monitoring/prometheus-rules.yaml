@@ -18,6 +18,14 @@ spec:
             sum(rate(http_requests_total{status_code!~"5.."}[5m]))
             /
             sum(rate(http_requests_total[5m]))
+        - record: slo:example_service_cascade_failure:ratio_rate5m
+          expr: |
+            sum(rate(http_requests_total{endpoint="/cascade-failure",status_code!~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{endpoint="/cascade-failure"}[5m]))
+        - record: slo:example_service_memory_pressure:bytes
+          expr: |
+            memory_pressure_bytes
     - name: slo.alerting
       rules:
         - alert: SLOLatencyBreach
@@ -40,3 +48,23 @@ spec:
           annotations:
             summary: "Error rate SLO breach detected for example-service"
             description: "Less than 99% of requests succeeded (non-5xx) for more than 2 minutes."
+        - alert: SLOCascadeFailureBreach
+          expr: slo:example_service_cascade_failure:ratio_rate5m < 0.95
+          for: 2m
+          labels:
+            severity: warning
+            alerttype: slo
+            slo_name: example-service-cascade-failure
+          annotations:
+            summary: "Cascade failure SLO breach detected for example-service"
+            description: "More than 5% of cascade requests failed for more than 2 minutes."
+        - alert: SLOResourceExhaustionBreach
+          expr: memory_pressure_bytes > 268435456
+          for: 2m
+          labels:
+            severity: warning
+            alerttype: slo
+            slo_name: example-service-resource-exhaustion
+          annotations:
+            summary: "Resource exhaustion SLO breach detected for example-service"
+            description: "Memory pressure exceeded 256MB for more than 2 minutes."

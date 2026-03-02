@@ -2,10 +2,12 @@
 """Exerciser script to drive traffic against the example service.
 
 Modes:
-  normal  - Sends requests to /api (healthy traffic)
-  latency - Sends requests to /latency with high delay_ms values
-  errors  - Sends requests to /error with 5xx codes
-  both    - Alternates between latency and error requests
+  normal          - Sends requests to /api (healthy traffic)
+  latency         - Sends requests to /latency with high delay_ms values
+  errors          - Sends requests to /error with 5xx codes
+  both            - Alternates between latency and error requests
+  cascade         - Sends requests to /cascade-failure with high failure probability
+  memory-pressure - Sends requests to /resource-exhaustion to allocate memory
 """
 
 import argparse
@@ -56,6 +58,14 @@ def run(target: str, mode: str, duration: float, rps: float):
             else:
                 code = random.choice([500, 502, 503])
                 url = f"{target}/error?code={code}"
+        elif mode == "cascade":
+            depth = random.randint(3, 8)
+            prob = round(random.uniform(0.5, 0.9), 2)
+            url = f"{target}/cascade-failure?depth={depth}&failure_prob={prob}"
+        elif mode == "memory-pressure":
+            mb = random.choice([5, 10, 20, 50])
+            hold = random.randint(10, 60)
+            url = f"{target}/resource-exhaustion?mb={mb}&hold_seconds={hold}"
         else:
             print(f"Unknown mode: {mode}", file=sys.stderr)
             sys.exit(1)
@@ -82,7 +92,7 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["normal", "latency", "errors", "both"],
+        choices=["normal", "latency", "errors", "both", "cascade", "memory-pressure"],
         default="normal",
         help="Traffic mode (default: normal)",
     )
